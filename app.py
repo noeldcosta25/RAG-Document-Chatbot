@@ -1,17 +1,23 @@
 import streamlit as st
-import tempfile
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from sentence_transformers import SentenceTransformer
 from langchain.embeddings.base import Embeddings
 from ctransformers import AutoModelForCausalLM
+import tempfile
+import os
 
-# ---------------- PAGE ----------------
-st.set_page_config(page_title="Local Document Chatbot", layout="wide")
-st.title("Local AI Document Chatbot")
+# -----------------------------
+# Page Config
+# -----------------------------
+st.set_page_config(page_title="Resume Analyzer (Local AI)", page_icon="🤖")
+st.title("Local Resume Analyzer (RAG + Mistral 7B)")
+st.write("Upload a resume and ask questions like a recruiter!")
 
-# ---------------- EMBEDDINGS ----------------
+# -----------------------------
+# Embedding Model
+# -----------------------------
 class LocalEmbeddings(Embeddings):
     def __init__(self):
         self.model = SentenceTransformer("all-MiniLM-L6-v2")
@@ -22,86 +28,82 @@ class LocalEmbeddings(Embeddings):
     def embed_query(self, text):
         return self.model.encode(text).tolist()
 
-# ---------------- LLM ----------------
+
+@st.cache_resource
+def load_embeddings():
+    return LocalEmbeddings()
+
+
+embeddings = load_embeddings()
+
+# -----------------------------
+# Load LLM
+# -----------------------------
 @st.cache_resource
 def load_llm():
     llm = AutoModelForCausalLM.from_pretrained(
         "TheBloke/Mistral-7B-Instruct-v0.2-GGUF",
         model_file="mistral-7b-instruct-v0.2.Q4_K_M.gguf",
         model_type="mistral",
-        gpu_layers=0
     )
     return llm
 
+
 llm = load_llm()
 
-# ---------------- FILE UPLOAD ----------------
-uploaded_file = st.file_uploader("Upload a PDF document", type="pdf")
+# -----------------------------
+# Upload PDF
+# -----------------------------
+uploaded_file = st.file_uploader("Upload Resume (PDF)", type="pdf")
 
-# ---------------- VECTORSTORE CREATION ----------------
-@st.cache_resource(show_spinner=False)
-def create_vectorstore(file):
+if uploaded_file:
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-        tmp_file.write(file.read())
-        tmp_path = tmp_file.name
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(uploaded_file.read())
+        temp_path = tmp.name
 
-    loader = PyPDFLoader(tmp_path)
-    documents = loader.load()
+    st.success("Resume uploaded successfully!")
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=350, chunk_overlap=50)
-    docs = splitter.split_documents(documents)
+    # -----------------------------
+    # Load + Chunk + Vector DB
+    # -----------------------------
+    @st.cache_resource
+    def build_vectorstore(pdf_path):
+        loader = PyPDFLoader(pdf_path)
+        documents = loader.load()
 
-    embeddings = LocalEmbeddings()
-    vectorstore = FAISS.from_documents(docs, embeddings)
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=220,
+            chunk_overlap=40
+        )
 
-    return vectorstore
+        docs = splitter.split_documents(documents)
 
-vectorstore = None
-if uploaded_file is not None:
-    vectorstore = create_vectorstore(uploaded_file)
+        vectorstore = FAISS.from_documents(docs, embeddings)
+        return vectorstore
 
-# ---------------- CHAT MEMORY ----------------
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+    vectorstore = build_vectorstore(temp_path)
 
-# Display previous messages
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.write(msg["content"])
+    # -----------------------------
+    # Ask Question
+    # -----------------------------
+    query = st.text_input("Ask a question about the candidate")
 
-# ---------------- USER INPUT ----------------
-query = st.chat_input("Ask questions about the uploaded document")
+    if st.button("Analyze") and query:
 
-if query:
+        with st.spinner("Thinking like a recruiter..."):
 
-    if vectorstore is None:
-        st.warning("Please upload a PDF first")
-        st.stop()
+            docs = vectorstore.similarity_search(query, k=3)
+            context = "\n".join([d.page_content for d in docs])
 
-    # Save user message
-    st.session_state.messages.append({"role": "user", "content": query})
-    with st.chat_message("user"):
-        st.write(query)
+            prompt = f"""
+You are an experienced technical recruiter evaluating a candidate.
 
-    # Retrieval
-    docs_scores = vectorstore.similarity_search_with_score(query, k=4)
-    docs = [doc for doc, score in docs_scores if score < 0.6]
-
-    # If no relevant context → stop hallucination
-    if len(docs) == 0:
-        response = "Not found in document"
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        with st.chat_message("assistant"):
-            st.write(response)
-        st.stop()
-
-    context = "\n".join([d.page_content for d in docs])
-
-    # -------- Stage 1: Fact Extraction --------
-    fact_prompt = f"""
-Extract only the important factual points from the context relevant to the question.
-Do not explain. Do not add new information.
+Your job:
+- Explain the candidate professionally
+- Summarize strengths clearly
+- Never invent information
+- If missing say: Not found in document
 
 Context:
 {context}
@@ -109,29 +111,10 @@ Context:
 Question:
 {query}
 
-Facts:
-"""
-    facts = llm(fact_prompt)
-
-    # -------- Stage 2: Final Answer --------
-    final_prompt = f"""
-You are a professional assistant.
-
-Using ONLY these facts, write a clear natural language answer.
-If facts are empty say: Not found in document
-
-Facts:
-{facts}
-
-Question:
-{query}
-
 Answer:
 """
-    response = llm(final_prompt)
 
-    # Save assistant response
-    st.session_state.messages.append({"role": "assistant", "content": response})
+            response = llm(prompt, max_new_tokens=180, temperature=0.3)
 
-    with st.chat_message("assistant"):
+        st.subheader("AI Recruiter Response")
         st.write(response)
