@@ -7,7 +7,7 @@ This helps reduce wrong answers (hallucinations).
 
 ---
 
-## 🚀 Features
+## Features
 - Ask questions from any PDF
 - Summarize resumes or notes
 - Answers based only on document content
@@ -16,7 +16,7 @@ This helps reduce wrong answers (hallucinations).
 
 ---
 
-## 🧠 Models Used
+## Models Used
 
 ### Local
 - **Mistral-7B-Instruct (compressed / quantized)** → generates answers
@@ -40,7 +40,7 @@ Colab shows the real capability of the model.
 
 ---
 
-## 🏗️ How it works
+## How it works
 
 PDF → Split into chunks → Convert to vectors → Search relevant text → Send to AI → Generate answer
 
